@@ -20,7 +20,17 @@ export const ErrorResponseSchema = z.object({
 
 export interface FocalboardConfig {
   baseUrl: string;
+  /**
+   * API prefix for Focalboard endpoints.
+   * - Standalone: "/api/v2"
+   * - Mattermost plugin: "/plugins/focalboard/api/v2"
+   */
+  apiPrefix: string;
   token: string;
+  /** Optional CSRF token (Mattermost uses MMCSRF) */
+  csrfToken?: string;
+  /** Some deployments require this header (e.g. Mattermost). */
+  requestedWith?: string;
 }
 
 export type PropertyOption = z.infer<typeof PropertyOptionSchema>;

@@ -8,7 +8,7 @@
 - **Block 操作**: 管理看板中的块（卡片、任务等）
 - **批量操作**: 支持批量创建和更新块
 - **原子操作**: 确保看板和块操作的事务性
-- **认证系统**: 完整的用户认证和权限管理
+- **认证**: 支持 Token 认证；可选支持启动时使用用户名/密码自动登录
 
 ## 技术栈
 
@@ -51,7 +51,12 @@ bun run index.ts
 ```bash
 # 设置环境变量
 export FOCALBOARD_URL="https://your-focalboard-instance.com"
-export FOCALBOARD_TOKEN="your-auth-token"
+export FOCALBOARD_TOKEN="your-auth-token"  # 可选：如果不使用用户名/密码登录
+
+# 可选：Focalboard API 前缀
+# - 独立部署（默认）：/api/v2
+# - Mattermost 插件：/plugins/focalboard/api/v2
+export FOCALBOARD_API_PREFIX="/api/v2"
 ```
 
 或创建 `.env` 文件：
@@ -59,6 +64,38 @@ export FOCALBOARD_TOKEN="your-auth-token"
 ```env
 FOCALBOARD_URL=https://your-focalboard-instance.com
 FOCALBOARD_TOKEN=your-auth-token
+FOCALBOARD_API_PREFIX=/api/v2
+```
+
+#### 启动时使用用户名/密码自动登录（可选）
+
+此服务器默认使用 `FOCALBOARD_TOKEN` 通过 `Authorization: Bearer <token>` 访问。
+
+如果你希望不手动维护 token，可以在启动服务器时提供用户名/密码；服务器会在启动时自动登录，在收到退出信号时（SIGINT/SIGTERM）尽力自动登出。
+
+推荐变量：
+
+```bash
+# 其一：Mattermost（常见）
+export FOCALBOARD_LOGIN_ID="bsr"
+export FOCALBOARD_PASSWORD="12345"
+
+# 其二：独立 Focalboard
+export FOCALBOARD_USERNAME="your-username"
+export FOCALBOARD_PASSWORD="your-password"
+
+# 可选：强制模式（默认 auto，会根据 apiPrefix 推断）
+export FOCALBOARD_AUTH_MODE="auto"  # auto | mattermost | focalboard
+```
+
+额外可选环境变量：
+
+```bash
+# 如果你想手动提供 CSRF（一般不需要；Mattermost 登录会自动获取 MMCSRF）
+export FOCALBOARD_CSRF_TOKEN="your-csrf-token"
+
+# 某些部署需要 X-Requested-With（默认已设置为 XMLHttpRequest）
+export FOCALBOARD_REQUESTED_WITH="XMLHttpRequest"
 ```
 
 ### 2. 配置 MCP 客户端
@@ -128,23 +165,18 @@ FOCALBOARD_TOKEN=your-auth-token
 - `get_board`: 获取看板详情
 - `update_board`: 更新看板信息
 - `delete_board`: 删除看板
-- `search_boards`: 搜索看板
-- `list_boards`: 列出所有看板
-- `copy_board`: 复制看板
-- `archive_board`: 归档看板
+- `list_boards`: 列出团队中的所有看板
+- `search_boards`: 按标题搜索看板
 
 #### Block 管理工具
-- `create_block`: 创建新块（卡片、任务等）
-- `get_block`: 获取块详情
-- `update_block`: 更新块信息
-- `delete_block`: 删除块
-- `create_blocks`: 批量创建块
-- `update_blocks`: 批量更新块
-- `copy_block`: 复制块
+- `create_blocks`: 批量创建块（卡片、任务等）
+- `get_blocks`: 获取看板中的块（支持按父ID或类型过滤）
+- `update_block`: 更新单个块的信息
+- `delete_block`: 删除单个块
 
 #### 组合操作
-- `create_board_with_blocks`: 创建看板并添加初始块
-- `update_board_and_blocks`: 同时更新看板和多个块
+- `insert_boards_and_blocks`: 原子性地同时创建看板和块
+- `patch_boards_and_blocks`: 原子性地同时更新看板和块
 
 ### 5. 常见用例
 
@@ -165,13 +197,9 @@ FOCALBOARD_TOKEN=your-auth-token
 ```
 
 #### 批量操作
+
 ```
 将看板"周计划"中的所有未完成任务分配给用户"张三"
-```
-
-#### 数据备份
-```
-复制看板"项目A"的所有内容到新看板"项目A-备份"
 ```
 
 ## 项目结构
@@ -184,30 +212,29 @@ focalboard-mcp/
 ├── swagger.yml                       # Focalboard API 规范
 ├── CLAUDE.md                         # 开发者指南
 ├── PLANNING.md                       # 项目规划文档
+├── src/                              # 源代码
+│   ├── client/                       # Focalboard 客户端
+│   ├── tools/                        # MCP 工具实现
+│   └── types/                        # 类型定义
+├── test/                             # 测试文件
 ├── planning/                         # 详细规划文件
-│   ├── types.ts                      # 类型定义
-│   ├── tools-spec-*.ts               # 工具规范
-│   └── test-cases-*.md               # 测试用例
 └── README.md                         # 本文件
 ```
 
 ## 工具分类
 
-### Board 操作（11个工具）
+### Board 操作（6个工具）
 - 创建、读取、更新、删除看板
 - 搜索和列出现有看板
-- 复制和归档看板
-- 管理看板成员（加入/离开）
-- 恢复已删除的看板
 
-### Block 操作（7个工具）
-- 创建、读取、更新、删除块
-- 批量创建和更新块
-- 复制现有块
-- 恢复已删除的块
+### Block 操作（4个工具）
+- 批量创建块
+- 获取/过滤块
+- 更新和删除单个块
 
-### 组合操作（3个工具）
-- 原子性的看板+块操作
+### 组合操作（2个工具）
+- 原子性的看板+块创建
+- 原子性的看板+块更新
 - 事务性语义保证
 
 ## 开发指南
