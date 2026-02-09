@@ -1,62 +1,64 @@
 import type { FocalboardClient } from "../client/focalboard";
 import { CreateBoardSchema, BoardPatchSchema } from "../types/board";
+import { formatBoard } from "./format";
 
 export const boardTools = [
   {
     name: "create_board",
-    description: "Create a new board in a team",
+    description: "Create a new board",
     inputSchema: { type: "object", properties: {
-      teamId: { type: "string", description: "Team ID" },
       title: { type: "string", description: "Board title" },
       description: { type: "string", description: "Board description" },
-      icon: { type: "string", description: "Board icon emoji" },
-      type: { type: "string", enum: ["O", "P"], default: "P", description: "O=Open, P=Private" },
-    }, required: ["teamId", "title"] },
-  },
-  {
-    name: "get_board",
-    description: "Get board details by ID",
-    inputSchema: { type: "object", properties: { boardId: { type: "string" } }, required: ["boardId"] },
+    }, required: ["title"] },
   },
   {
     name: "update_board",
     description: "Update board properties",
     inputSchema: { type: "object", properties: {
-      boardId: { type: "string" },
-      title: { type: "string" },
-      description: { type: "string" },
-      icon: { type: "string" },
-      type: { type: "string", enum: ["O", "P"] },
-    }, required: ["boardId"] },
+      board: { type: "string", description: "Board name or ID" },
+      patch: { type: "object", description: "Fields to update: title, description, icon, type (O=Open/P=Private), etc." },
+    }, required: ["board", "patch"] },
   },
   {
     name: "delete_board",
     description: "Delete a board",
-    inputSchema: { type: "object", properties: { boardId: { type: "string" } }, required: ["boardId"] },
+    inputSchema: { type: "object", properties: {
+      board: { type: "string", description: "Board name or ID" },
+    }, required: ["board"] },
   },
   {
     name: "list_boards",
-    description: "List all boards in a team",
-    inputSchema: { type: "object", properties: { teamId: { type: "string" } }, required: ["teamId"] },
-  },
-  {
-    name: "search_boards",
-    description: "Search boards by title",
+    description: "List or search boards. Without query returns all boards; with query searches by title. If you don't have a boardId, use this tool first to find it. Use the shortest keyword possible for best results (e.g. use '需求' instead of '需求管理看板').",
     inputSchema: { type: "object", properties: {
-      teamId: { type: "string" },
-      query: { type: "string", description: "Search query" },
-    }, required: ["teamId", "query"] },
+      query: { type: "string", description: "Shortest keyword to match board title. Use minimal terms for broad matching." },
+    } },
   },
 ];
 
 export async function handleBoardTool(client: FocalboardClient, name: string, args: Record<string, unknown>) {
+  const teamId = process.env.FOCALBOARD_TEAM_ID || "0";
   switch (name) {
-    case "create_board": return client.createBoard(CreateBoardSchema.parse(args));
-    case "get_board": return client.getBoard(args.boardId as string);
-    case "update_board": return client.updateBoard(args.boardId as string, BoardPatchSchema.parse(args));
-    case "delete_board": return client.deleteBoard(args.boardId as string);
-    case "list_boards": return client.listBoards(args.teamId as string);
-    case "search_boards": return client.searchBoards(args.teamId as string, args.query as string);
+    case "create_board": {
+      const result = await client.createBoard(CreateBoardSchema.parse({ ...args, teamId }));
+      return formatBoard(result);
+    }
+    case "update_board": {
+      const board = await client.resolveBoard(args.board as string);
+      const result = await client.updateBoard(board.id, BoardPatchSchema.parse(args.patch));
+      return formatBoard(result);
+    }
+    case "delete_board": {
+      const board = await client.resolveBoard(args.board as string);
+      await client.deleteBoard(board.id);
+      return { deleted: board.title };
+    }
+    case "list_boards": {
+      const q = args.query as string | undefined;
+      const boards = q
+        ? await client.searchAllBoards(q)
+        : await client.listBoards(teamId);
+      return boards.map(formatBoard);
+    }
     default: throw new Error(`Unknown board tool: ${name}`);
   }
 }

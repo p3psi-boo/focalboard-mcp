@@ -175,15 +175,63 @@ export class FocalboardClient {
     return { ok: true };
   }
 
-  createBoard = (data: CreateBoard) => this.request<Board>("POST", "/boards", data);
+  async resolveBoard(board: string): Promise<Board> {
+    const isId = /^[a-z0-9]{20,}$/.test(board) || /^[0-9a-f-]{36}$/.test(board);
+    if (isId) {
+      try { return await this.getBoard(board); } catch {}
+    }
+    const teamId = process.env.FOCALBOARD_TEAM_ID || "0";
+    const results = await this.searchBoards(teamId, board);
+    const exact = results.find(b => b.title === board);
+    if (exact) return exact;
+    if (results.length === 1) return results[0];
+    if (results.length > 1) throw new Error(`Found ${results.length} boards matching "${board}": ${results.map(b => b.title).join(", ")}. Please be more specific.`);
+    throw new Error(`Board "${board}" not found`);
+  }
+
+  async resolveBlock(boardId: string, block: string): Promise<Block> {
+    const isId = /^[a-z0-9]{20,}$/.test(block) || /^[0-9a-f-]{36}$/.test(block);
+    if (isId) {
+      const blocks = await this.getBlocks(boardId);
+      const found = blocks.find(b => b.id === block);
+      if (found) return found;
+    }
+    const blocks = await this.getBlocks(boardId);
+    const matches = blocks.filter(b => b.title === block);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) throw new Error(`Found ${matches.length} blocks matching "${block}". Please use the block ID: ${matches.map(b => `${b.title} (${b.id})`).join(", ")}`);
+    throw new Error(`Block "${block}" not found in this board`);
+  }
+
+  createBoard = (data: CreateBoard) => {
+    const now = Date.now();
+    return this.request<Board>("POST", "/boards", { ...data, createAt: now, updateAt: now });
+  };
   getBoard = (id: string) => this.request<Board>("GET", `/boards/${id}`);
   updateBoard = (id: string, patch: BoardPatch) => this.request<Board>("PATCH", `/boards/${id}`, patch);
   deleteBoard = (id: string) => this.request<void>("DELETE", `/boards/${id}`);
   listBoards = (teamId: string) => this.request<Board[]>("GET", `/teams/${teamId}/boards`);
   searchBoards = (teamId: string, q: string) => this.request<Board[]>("GET", `/teams/${teamId}/boards/search?q=${encodeURIComponent(q)}`);
+  searchAllBoards = (q: string) => this.request<Board[]>("GET", `/boards/search?q=${encodeURIComponent(q)}`);
 
-  createBlocks = (boardId: string, blocks: CreateBlock[], disableNotify = false) =>
-    this.request<Block[]>("POST", `/boards/${boardId}/blocks?disable_notify=${disableNotify}`, blocks);
+  createBlocks = (boardId: string, blocks: CreateBlock[]) => {
+    const now = Date.now();
+    const withIds = blocks.map(b => ({
+      ...b,
+      id: (b as any).id || this.generateId(),
+      boardId,
+      createAt: now,
+      updateAt: now,
+    }));
+    return this.request<Block[]>("POST", `/boards/${boardId}/blocks`, withIds);
+  };
+
+  private generateId(): string {
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const bytes = new Uint8Array(27);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, b => chars[b % chars.length]).join("");
+  }
   getBlocks = (boardId: string, parentId?: string, type?: string) => {
     const params = new URLSearchParams();
     if (parentId) params.set("parent_id", parentId);
@@ -191,13 +239,9 @@ export class FocalboardClient {
     const qs = params.toString();
     return this.request<Block[]>("GET", `/boards/${boardId}/blocks${qs ? `?${qs}` : ""}`);
   };
-  updateBlock = (boardId: string, blockId: string, patch: BlockPatch, disableNotify = false) =>
-    this.request<Block>("PATCH", `/boards/${boardId}/blocks/${blockId}?disable_notify=${disableNotify}`, patch);
-  deleteBlock = (boardId: string, blockId: string, disableNotify = false) =>
-    this.request<void>("DELETE", `/boards/${boardId}/blocks/${blockId}?disable_notify=${disableNotify}`);
+  updateBlock = (boardId: string, blockId: string, patch: BlockPatch) =>
+    this.request<Block>("PATCH", `/boards/${boardId}/blocks/${blockId}`, patch);
+  deleteBlock = (boardId: string, blockId: string) =>
+    this.request<void>("DELETE", `/boards/${boardId}/blocks/${blockId}`);
 
-  insertBoardsAndBlocks = (boards: CreateBoard[], blocks: CreateBlock[]) =>
-    this.request<{ boards: Board[]; blocks: Block[] }>("POST", "/boards-and-blocks", { boards, blocks });
-  patchBoardsAndBlocks = (boardIDs: string[], boardPatches: BoardPatch[], blockIDs: string[], blockPatches: BlockPatch[]) =>
-    this.request<{ boards: Board[]; blocks: Block[] }>("PATCH", "/boards-and-blocks", { boardIDs, boardPatches, blockIDs, blockPatches });
 }

@@ -4,9 +4,8 @@
 
 ## 功能特性
 
-- **Board 管理** — 创建、读取、更新、删除、搜索、列表
-- **Block 管理** — 卡片 / 任务的 CRUD 及批量操作
-- **组合操作** — 原子性地同时创建或更新看板与块
+- **Board 管理** — 创建、读取、更新、删除、搜索、列表（teamId 自动从环境变量获取）
+- **Block 管理** — 卡片 / 任务的 CRUD 操作
 - **双传输模式** — 支持 Stdio 和 HTTP Streamable 两种 MCP 传输方式
 - **灵活认证** — Token 直接认证 或 用户名/密码自动登录（支持 Mattermost）
 
@@ -51,6 +50,7 @@ MCP_TRANSPORT=http bun run index.ts
 |------|------|--------|
 | `FOCALBOARD_URL` | Focalboard 实例地址 | `http://localhost:8000` |
 | `FOCALBOARD_API_PREFIX` | API 路径前缀 | `/api/v2` |
+| `FOCALBOARD_TEAM_ID` | 默认团队 ID（用于 list/create） | `0` |
 | `FOCALBOARD_TOKEN` | 认证 Token | — |
 | `FOCALBOARD_CSRF_TOKEN` | CSRF Token（一般不需要手动设置） | — |
 | `FOCALBOARD_REQUESTED_WITH` | `X-Requested-With` 请求头 | `XMLHttpRequest` |
@@ -109,32 +109,26 @@ HTTP 模式支持：
 
 ## 可用工具
 
-### Board 管理（6 个）
+> 所有参数均使用**名称**而非 ID。服务器会自动按名称搜索解析为 ID。返回结果仅包含关键字段以节省 Token。
 
-| 工具 | 说明 |
-|------|------|
-| `create_board` | 在团队中创建新看板 |
-| `get_board` | 获取看板详情 |
-| `update_board` | 更新看板属性 |
-| `delete_board` | 删除看板 |
-| `list_boards` | 列出团队中所有看板 |
-| `search_boards` | 按标题搜索看板 |
+### Board 管理（5 个）
+
+| 工具 | 必填参数 | 说明 |
+|------|----------|------|
+| `create_board` | `title` | 创建新看板 |
+| `get_board` | `board` | 按名称获取看板详情 |
+| `update_board` | `board`, `patch` | 更新看板属性 |
+| `delete_board` | `board` | 删除看板 |
+| `list_boards` | _(无)_ | 列出所有看板（可选 `query` 按标题搜索） |
 
 ### Block 管理（4 个）
 
-| 工具 | 说明 |
-|------|------|
-| `create_blocks` | 批量创建块（卡片、任务等） |
-| `get_blocks` | 获取看板中的块（可按父 ID 或类型过滤） |
-| `update_block` | 更新单个块 |
-| `delete_block` | 删除单个块 |
-
-### 组合操作（2 个）
-
-| 工具 | 说明 |
-|------|------|
-| `insert_boards_and_blocks` | 原子性地同时创建看板和块 |
-| `patch_boards_and_blocks` | 原子性地同时更新看板和块 |
+| 工具 | 必填参数 | 说明 |
+|------|----------|------|
+| `create_block` | `board`, `type` | 创建块（card、view、text 等） |
+| `get_blocks` | `board` | 获取看板中的块（可选 `type` 过滤） |
+| `update_block` | `board`, `block`, `patch` | 更新块 |
+| `delete_block` | `board`, `block` | 删除块 |
 
 ## 使用示例
 
@@ -143,11 +137,15 @@ HTTP 模式支持：
 ```
 
 ```
-在看板中添加一个任务：标题"完成 API 设计"，状态"进行中"
+在"项目跟踪"看板中添加一个卡片：标题"完成 API 设计"
 ```
 
 ```
-搜索所有包含"API"关键词的看板
+列出包含"API"关键词的看板
+```
+
+```
+更新"项目跟踪"中的"完成 API 设计"卡片，标题改为"API 设计已完成"
 ```
 
 ## 项目结构
@@ -161,8 +159,7 @@ focalboard-mcp/
 │   │   └── focalboard.ts # Focalboard API 客户端
 │   ├── tools/
 │   │   ├── boards.ts     # Board 工具定义与处理
-│   │   ├── blocks.ts     # Block 工具定义与处理
-│   │   └── combined.ts   # 组合操作工具
+│   │   └── blocks.ts     # Block 工具定义与处理
 │   └── types/
 │       ├── board.ts      # Board Zod schemas
 │       ├── block.ts      # Block Zod schemas

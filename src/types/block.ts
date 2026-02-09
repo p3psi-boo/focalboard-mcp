@@ -14,7 +14,7 @@ export const BlockSchema = z.object({
   schema: z.number().optional(),
   type: BlockTypeSchema,
   title: z.string().optional(),
-  fields: z.record(z.any()).optional(),
+  fields: z.record(z.string(), z.any()).optional(),
   createAt: z.number().optional(),
   updateAt: z.number().optional(),
   deleteAt: z.number().optional(),
@@ -25,16 +25,17 @@ export const BlockPatchSchema = z.object({
   parentId: z.string().optional(),
   schema: z.number().optional(),
   type: BlockTypeSchema.optional(),
-  updatedFields: z.record(z.any()).optional(),
+  updatedFields: z.record(z.string(), z.any()).optional(),
   deletedFields: z.array(z.string()).optional(),
 });
 
 export const CreateBlockSchema = z.object({
-  boardId: z.string(),
+  // boardId comes from the path param for create_blocks; omit in each block payload.
+  boardId: z.string().optional(),
   parentId: z.string().optional(),
   type: BlockTypeSchema,
   title: z.string().optional(),
-  fields: z.record(z.any()).optional(),
+  fields: z.record(z.string(), z.any()).optional(),
 });
 
 export type BlockType = z.infer<typeof BlockTypeSchema>;
