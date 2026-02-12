@@ -25,7 +25,7 @@ describe("Performance Tests", () => {
   });
 
   test("handles deep hierarchy", () => {
-    let parent = createMockBlock({ id: "root", type: "board" });
+    let parent = createMockBlock({ id: "root", type: "card" });
     const blocks = [parent];
 
     for (let i = 0; i < 100; i++) {

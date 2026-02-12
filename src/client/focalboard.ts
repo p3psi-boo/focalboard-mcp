@@ -1,23 +1,11 @@
 import type { FocalboardConfig } from "../types/common";
 import type { Board, BoardPatch, CreateBoard } from "../types/board";
 import type { Block, BlockPatch, CreateBlock } from "../types/block";
+import type { Card, CardPatch, CreateCard } from "../types/card";
+import { login as authLogin, logout as authLogout } from "./auth";
+import type { AuthMode, LoginParams, LoginResult } from "./auth";
 
-export type AuthMode = "auto" | "focalboard" | "mattermost";
-
-export interface LoginParams {
-  /** Mattermost uses login_id; Focalboard typically uses username/email */
-  loginId?: string;
-  username?: string;
-  password: string;
-  /** Force which login endpoint to use */
-  mode?: AuthMode;
-}
-
-export interface LoginResult {
-  mode: Exclude<AuthMode, "auto">;
-  token: string;
-  csrfToken?: string;
-}
+export type { AuthMode, LoginParams, LoginResult };
 
 export class FocalboardClient {
   private token: string;
@@ -43,34 +31,22 @@ export class FocalboardClient {
     return { token: this.token, csrfToken: this.csrfToken };
   }
 
-  private inferAuthMode(): Exclude<AuthMode, "auto"> {
-    // Heuristic: plugin deployments use /plugins/focalboard/api/v2.
-    return this.apiPrefix.includes("/plugins/focalboard/") ? "mattermost" : "focalboard";
+  async login(params: LoginParams): Promise<LoginResult> {
+    const result = await authLogin(
+      { baseUrl: this.baseUrl, apiPrefix: this.apiPrefix, requestedWith: this.requestedWith },
+      params,
+    );
+    this.setAuth({ token: result.token, csrfToken: result.csrfToken });
+    return result;
   }
 
-  private getSetCookieHeaders(headers: Headers): string[] {
-    // Bun/undici: Headers.getSetCookie() returns string[]
-    const anyHeaders = headers as any;
-    if (typeof anyHeaders.getSetCookie === "function") {
-      const v = anyHeaders.getSetCookie();
-      if (Array.isArray(v)) return v;
-    }
-
-    // Fallback: some runtimes concatenate multiple Set-Cookie values.
-    const raw = headers.get("set-cookie");
-    if (!raw) return [];
-
-    // Split on commas that look like cookie delimiters, not Expires.
-    return raw.split(/,(?=[^;\s]+=)/g).map((s) => s.trim()).filter(Boolean);
-  }
-
-  private findCookie(setCookies: string[], name: string): string | undefined {
-    for (const sc of setCookies) {
-      if (sc.startsWith(`${name}=`)) {
-        return sc.slice(name.length + 1).split(";")[0];
-      }
-    }
-    return undefined;
+  async logout(mode: AuthMode = "auto"): Promise<{ ok: true }> {
+    await authLogout(
+      { baseUrl: this.baseUrl, apiPrefix: this.apiPrefix, requestedWith: this.requestedWith, token: this.token, csrfToken: this.csrfToken },
+      mode,
+    );
+    this.setAuth({ token: "", csrfToken: undefined });
+    return { ok: true };
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -88,103 +64,23 @@ export class FocalboardClient {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
+      const err = await res.json().catch(() => ({ error: res.statusText })) as Record<string, string>;
       throw new Error(err.error || `HTTP ${res.status}`);
     }
-    return res.json();
+    return res.json() as T;
   }
 
-  async login(params: LoginParams): Promise<LoginResult> {
-    const mode = params.mode && params.mode !== "auto" ? params.mode : this.inferAuthMode();
-    if (mode === "mattermost") {
-      const login_id = params.loginId || params.username;
-      if (!login_id) throw new Error("login requires loginId or username");
-      const res = await fetch(`${this.baseUrl}/api/v4/users/login`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.requestedWith ? { "X-Requested-With": this.requestedWith } : {}),
-        },
-        body: JSON.stringify({ login_id, password: params.password }),
-      });
+  // Resolution helpers
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-
-      const token = res.headers.get("Token") || res.headers.get("token") || "";
-      if (!token) throw new Error("Login succeeded but no Token header returned");
-
-      const setCookies = this.getSetCookieHeaders(res.headers);
-      const csrfToken = this.findCookie(setCookies, "MMCSRF");
-
-      this.setAuth({ token, csrfToken });
-      return { mode, token, csrfToken };
-    }
-
-    // Standalone Focalboard login endpoint
-    const username = params.username || params.loginId;
-    if (!username) throw new Error("login requires username or loginId");
-    const res = await fetch(`${this.baseUrl}${this.apiPrefix}/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.requestedWith ? { "X-Requested-With": this.requestedWith } : {}),
-      },
-      body: JSON.stringify({ username, password: params.password }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
-
-    const data = await res.json().catch(() => null) as any;
-    const token = data?.token as string | undefined;
-    if (!token) throw new Error("Login succeeded but response had no token");
-    this.setAuth({ token });
-    return { mode, token };
-  }
-
-  async logout(mode: AuthMode = "auto"): Promise<{ ok: true }> {
-    const resolved = mode !== "auto" ? mode : this.inferAuthMode();
-    // Best-effort server-side logout; always clear local auth.
-    try {
-      if (resolved === "mattermost") {
-        const headers: Record<string, string> = {};
-        if (this.token) headers.Authorization = `Bearer ${this.token}`;
-        if (this.csrfToken) headers["X-CSRF-Token"] = this.csrfToken;
-        if (this.requestedWith) headers["X-Requested-With"] = this.requestedWith;
-        await fetch(`${this.baseUrl}/api/v4/users/logout`, { method: "POST", headers });
-      } else {
-        await fetch(`${this.baseUrl}${this.apiPrefix}/logout`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-            ...(this.requestedWith ? { "X-Requested-With": this.requestedWith } : {}),
-          },
-        });
-      }
-    } catch {
-      // Ignore logout network errors; local clear is the important part.
-    }
-
-    this.setAuth({ token: "", csrfToken: undefined });
-    return { ok: true };
-  }
-
-  async resolveBoard(board: string): Promise<Board> {
+  async resolveBoard(board: string, teamId: string): Promise<Board> {
     const isId = /^[a-z0-9]{20,}$/.test(board) || /^[0-9a-f-]{36}$/.test(board);
     if (isId) {
       try { return await this.getBoard(board); } catch {}
     }
-    const teamId = process.env.FOCALBOARD_TEAM_ID || "0";
     const results = await this.searchBoards(teamId, board);
     const exact = results.find(b => b.title === board);
     if (exact) return exact;
-    if (results.length === 1) return results[0];
+    if (results.length === 1) return results[0]!;
     if (results.length > 1) throw new Error(`Found ${results.length} boards matching "${board}": ${results.map(b => b.title).join(", ")}. Please be more specific.`);
     throw new Error(`Board "${board}" not found`);
   }
@@ -198,10 +94,12 @@ export class FocalboardClient {
     }
     const blocks = await this.getBlocks(boardId);
     const matches = blocks.filter(b => b.title === block);
-    if (matches.length === 1) return matches[0];
+    if (matches.length === 1) return matches[0]!
     if (matches.length > 1) throw new Error(`Found ${matches.length} blocks matching "${block}". Please use the block ID: ${matches.map(b => `${b.title} (${b.id})`).join(", ")}`);
     throw new Error(`Block "${block}" not found in this board`);
   }
+
+  // Board CRUD
 
   createBoard = (data: CreateBoard) => {
     const now = Date.now();
@@ -213,6 +111,8 @@ export class FocalboardClient {
   listBoards = (teamId: string) => this.request<Board[]>("GET", `/teams/${teamId}/boards`);
   searchBoards = (teamId: string, q: string) => this.request<Board[]>("GET", `/teams/${teamId}/boards/search?q=${encodeURIComponent(q)}`);
   searchAllBoards = (q: string) => this.request<Board[]>("GET", `/boards/search?q=${encodeURIComponent(q)}`);
+
+  // Block CRUD
 
   createBlocks = (boardId: string, blocks: CreateBlock[]) => {
     const now = Date.now();
@@ -232,6 +132,7 @@ export class FocalboardClient {
     crypto.getRandomValues(bytes);
     return Array.from(bytes, b => chars[b % chars.length]).join("");
   }
+
   getBlocks = (boardId: string, parentId?: string, type?: string) => {
     const params = new URLSearchParams();
     if (parentId) params.set("parent_id", parentId);
@@ -244,4 +145,26 @@ export class FocalboardClient {
   deleteBlock = (boardId: string, blockId: string) =>
     this.request<void>("DELETE", `/boards/${boardId}/blocks/${blockId}`);
 
+  // Card CRUD
+
+  listCards = (boardId: string, page = 0, perPage = 20) =>
+    this.request<Card[]>("GET", `/boards/${boardId}/cards?page=${page}&per_page=${perPage}`);
+  getCard = (cardId: string) =>
+    this.request<Card>("GET", `/cards/${cardId}`);
+  createCard = (boardId: string, data: CreateCard) => {
+    const now = Date.now();
+    return this.request<Card>("POST", `/boards/${boardId}/cards`, { ...data, createAt: now, updateAt: now });
+  };
+  updateCard = (cardId: string, patch: CardPatch) =>
+    this.request<Card>("PATCH", `/cards/${cardId}`, patch);
+
+  // Board members
+
+  getBoardMembers = (boardId: string) =>
+    this.request<any[]>("GET", `/boards/${boardId}/members`);
+
+  // Team users
+
+  listTeamUsers = (teamId: string) =>
+    this.request<any[]>("GET", `/teams/${teamId}/users`);
 }

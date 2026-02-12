@@ -1,31 +1,29 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { FocalboardClient } from "./client/focalboard";
-import { boardTools, handleBoardTool } from "./tools/boards";
-import { blockTools, handleBlockTool } from "./tools/blocks";
+import { getAllToolDefinitions, getToolHandler } from "./tools";
+import { config } from "./config";
+import { startHttpTransport } from "./transport/http";
+import { startStdioTransport } from "./transport/stdio";
 
 const client = new FocalboardClient({
-  baseUrl: process.env.FOCALBOARD_URL || "http://localhost:8000",
-  apiPrefix: process.env.FOCALBOARD_API_PREFIX || "/api/v2",
-  token: process.env.FOCALBOARD_TOKEN || "",
-  csrfToken: process.env.FOCALBOARD_CSRF_TOKEN,
-  requestedWith: process.env.FOCALBOARD_REQUESTED_WITH || "XMLHttpRequest",
+  baseUrl: config.focalboard.baseUrl,
+  apiPrefix: config.focalboard.apiPrefix,
+  token: config.focalboard.token,
+  csrfToken: config.focalboard.csrfToken,
+  requestedWith: config.focalboard.requestedWith,
 });
 
 function createServer() {
   const server = new Server({ name: "focalboard-mcp", version: "1.0.0" }, { capabilities: { tools: {} } });
 
-  const allTools = [...boardTools, ...blockTools];
-  const boardToolNames = new Set(boardTools.map(t => t.name));
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: allTools }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getAllToolDefinitions() }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args = {} } = req.params;
     try {
-      const result = boardToolNames.has(name)
-        ? await handleBoardTool(client, name, args)
-        : await handleBlockTool(client, name, args);
+      const handler = getToolHandler(name);
+      const result = await handler(client, args);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (e) {
       return { content: [{ type: "text", text: `Error: ${(e as Error).message}` }], isError: true };
@@ -35,18 +33,12 @@ function createServer() {
   return server;
 }
 
-const authMode = (process.env.FOCALBOARD_AUTH_MODE as "auto" | "mattermost" | "focalboard" | undefined) || "auto";
-
 async function startupAuth() {
-  const password = process.env.FOCALBOARD_PASSWORD;
-  const loginId = process.env.FOCALBOARD_LOGIN_ID;
-  const username = process.env.FOCALBOARD_USERNAME;
-
+  const { password, loginId, username, authMode } = config.focalboard;
   if (!password) return;
   if (!loginId && !username) {
     throw new Error("FOCALBOARD_PASSWORD is set but neither FOCALBOARD_LOGIN_ID nor FOCALBOARD_USERNAME is set");
   }
-
   await client.login({
     mode: authMode,
     loginId: loginId || undefined,
@@ -61,7 +53,7 @@ async function shutdown(reason: string) {
   shuttingDown = true;
 
   try {
-    await client.logout(authMode);
+    await client.logout(config.focalboard.authMode);
   } catch {
     // Best-effort logout; don't block shutdown.
   }
@@ -77,87 +69,8 @@ process.on("beforeExit", () => { void shutdown("beforeExit"); });
 
 await startupAuth();
 
-const transportMode = process.env.MCP_TRANSPORT || "stdio";
-
-if (transportMode === "http") {
-  const { WebStandardStreamableHTTPServerTransport } = await import(
-    "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
-  );
-
-  const port = parseInt(process.env.MCP_HTTP_PORT || "3000", 10);
-  const path = process.env.MCP_HTTP_PATH || "/mcp";
-
-  const sessions = new Map<string, { server: Server; transport: InstanceType<typeof WebStandardStreamableHTTPServerTransport> }>();
-
-  Bun.serve({
-    port,
-    routes: {
-      [path]: {
-        GET: async (req: Request) => {
-          const sessionId = req.headers.get("mcp-session-id");
-          if (!sessionId || !sessions.has(sessionId)) {
-            return new Response("Session not found", { status: 400 });
-          }
-          const session = sessions.get(sessionId)!;
-          return session.transport.handleRequest(req);
-        },
-        POST: async (req: Request) => {
-          const body = await req.json() as Record<string, unknown> | Record<string, unknown>[];
-          const isInitialize = Array.isArray(body)
-            ? body.some((m) => m.method === "initialize")
-            : body.method === "initialize";
-
-          if (isInitialize) {
-            const transport = new WebStandardStreamableHTTPServerTransport({
-              sessionIdGenerator: () => crypto.randomUUID(),
-              onsessioninitialized: (sessionId: string) => {
-                sessions.set(sessionId, { server, transport });
-              },
-            });
-
-            transport.onclose = () => {
-              if (transport.sessionId) {
-                sessions.delete(transport.sessionId);
-              }
-            };
-
-            const server = createServer();
-            await server.connect(transport);
-
-            return transport.handleRequest(req, { parsedBody: body });
-          }
-
-          const sessionId = req.headers.get("mcp-session-id");
-          if (!sessionId || !sessions.has(sessionId)) {
-            return new Response(
-              JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Session not found. Send an initialize request first." }, id: null }),
-              { status: 400, headers: { "Content-Type": "application/json" } }
-            );
-          }
-          const session = sessions.get(sessionId)!;
-          return session.transport.handleRequest(req, { parsedBody: body });
-        },
-        DELETE: async (req: Request) => {
-          const sessionId = req.headers.get("mcp-session-id");
-          if (!sessionId || !sessions.has(sessionId)) {
-            return new Response("Session not found", { status: 404 });
-          }
-          const session = sessions.get(sessionId)!;
-          const response = await session.transport.handleRequest(req);
-          sessions.delete(sessionId);
-          return response;
-        },
-      },
-    },
-    fetch(req) {
-      return new Response("Not Found", { status: 404 });
-    },
-  });
-
-  console.log(`MCP HTTP Streamable server listening on http://localhost:${port}${path}`);
+if (config.transport.mode === "http") {
+  await startHttpTransport(createServer, { port: config.transport.httpPort, path: config.transport.httpPath });
 } else {
-  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
-  const server = createServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await startStdioTransport(createServer());
 }

@@ -4,7 +4,7 @@ import {
   BlockSchema,
   BoardPatchSchema,
   BlockPatchSchema,
-} from "../../planning/types";
+} from "../../src/types";
 
 describe("Validation Tests", () => {
   describe("Board Validation", () => {
@@ -13,17 +13,18 @@ describe("Validation Tests", () => {
       expect(() => BoardSchema.parse(invalid)).toThrow();
     });
 
-    test("validates board with extra fields", () => {
+    test("validates board with required fields", () => {
       const board = {
+        id: "b1",
         teamId: "team-1",
         title: "Board",
-        extraField: "ignored",
+        type: "O",
       };
       const result = BoardSchema.parse(board);
       expect(result.title).toBe("Board");
     });
 
-    test("validates board patch with null values", () => {
+    test("validates board patch with undefined values", () => {
       const patch = { title: undefined, description: undefined };
       expect(() => BoardPatchSchema.parse(patch)).not.toThrow();
     });
@@ -37,6 +38,8 @@ describe("Validation Tests", () => {
 
     test("validates block with complex fields", () => {
       const block = {
+        id: "blk1",
+        boardId: "b1",
         type: "card",
         fields: {
           properties: { nested: { deep: { value: 123 } } },
