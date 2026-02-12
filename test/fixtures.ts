@@ -1,15 +1,31 @@
-import type { Board, Block, BoardMember, BoardMetadata } from "../planning/types";
+import type { Board } from "../src/types/board";
+import type { Block } from "../src/types/block";
 
-/**
- * Test fixtures for Focalboard entities
- */
+export interface BoardMember {
+  boardId: string;
+  userId: string;
+  roles: string;
+  minimumRole?: string;
+  schemeAdmin?: boolean;
+  schemeEditor?: boolean;
+  schemeCommenter?: boolean;
+  schemeViewer?: boolean;
+}
+
+export interface BoardMetadata {
+  boardId: string;
+  descriptionLastUpdateAt?: number;
+  lastActivityAt?: number;
+  createdBy?: string;
+  modifiedBy?: string;
+}
 
 export const createMockBoard = (overrides?: Partial<Board>): Board => ({
   id: "board-test-123",
   teamId: "team-test-456",
   title: "Test Board",
   description: "Test board description",
-  icon: "📋",
+  icon: "\u{1F4CB}",
   showDescription: true,
   isTemplate: false,
   templateVersion: 1,
@@ -20,7 +36,7 @@ export const createMockBoard = (overrides?: Partial<Board>): Board => ({
   deleteAt: 0,
   createdBy: "user-test-789",
   modifiedBy: "user-test-789",
-  type: "board",
+  type: "O",
   minimumRole: "viewer",
   ...overrides,
 });
@@ -29,7 +45,6 @@ export const createMockBlock = (overrides?: Partial<Block>): Block => ({
   id: "block-test-123",
   boardId: "board-test-456",
   parentId: "parent-test-789",
-  rootId: "root-test-000",
   createdBy: "user-test-111",
   modifiedBy: "user-test-111",
   schema: 1,
@@ -74,17 +89,17 @@ export const mockBoards = {
   kanban: createMockBoard({
     id: "board-kanban",
     title: "Kanban Board",
-    type: "kanban",
+    type: "O",
   }),
   table: createMockBoard({
     id: "board-table",
     title: "Table Board",
-    type: "table",
+    type: "P",
   }),
   gallery: createMockBoard({
     id: "board-gallery",
     title: "Gallery Board",
-    type: "gallery",
+    type: "O",
   }),
 };
 

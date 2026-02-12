@@ -17,7 +17,7 @@ describe("Block Lifecycle E2E", () => {
   });
 
   test("block hierarchy workflow", () => {
-    const parent = createMockBlock({ id: "parent-1", type: "board" });
+    const parent = createMockBlock({ id: "parent-1", type: "card" });
     const child1 = createMockBlock({
       id: "child-1",
       parentId: "parent-1",

@@ -1,106 +1,115 @@
+# CLAUDE.md
 
-Default to using Bun instead of Node.js.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
-- Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Bun automatically loads .env, so don't use dotenv.
+## Project Overview
 
-## APIs
+Focalboard MCP Server — a Model Context Protocol server that exposes Focalboard/Mattermost Boards as AI-accessible tools. Built with Bun, TypeScript, Zod 4, and `@modelcontextprotocol/sdk`.
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+## Commands
+
+```bash
+bun run index.ts              # Start MCP server (stdio mode)
+MCP_TRANSPORT=http bun run index.ts  # Start in HTTP streamable mode
+bun test                      # Run all tests
+bun test --watch              # Watch mode
+bun test --coverage           # With coverage
+bun test test/auth/           # Run tests in a specific directory
+bun install                   # Install dependencies
+```
+
+Always use Bun, never Node.js/npm/npx. Bun auto-loads `.env` files — don't use dotenv.
+
+## Architecture
+
+### Entry Point & Transport
+
+`src/index.ts` creates the MCP server, a shared `FocalboardClient` instance, and routes to the selected transport. On startup, if `FOCALBOARD_PASSWORD` is set, auto-login runs via `startupAuth()`. Graceful shutdown (SIGINT/SIGTERM/beforeExit) calls `client.logout()`.
+
+Transport modes (controlled by `MCP_TRANSPORT` env var):
+- **stdio** (default) — `src/transport/stdio.ts`, wraps `StdioServerTransport`
+- **http** — `src/transport/http.ts`, `Bun.serve()` with SSE streaming and per-session server instances
+
+### API Client
+
+`src/client/focalboard.ts` — `FocalboardClient` class wrapping Focalboard's HTTP API. Key patterns:
+- **Name resolution**: `resolveBoard(nameOrId)` and `resolveBlock(boardId, nameOrId)` convert human-readable names to IDs. Tools accept names or IDs transparently.
+- **Auth modes** (`src/client/auth.ts`): `mattermost` (Mattermost `/api/v4` endpoints with CSRF), `focalboard` (native `/api/v2` with Bearer token), or `auto` (inferred from `FOCALBOARD_API_PREFIX` containing `/plugins/focalboard/`).
+- **ID generation**: `generateId()` produces 27-char alphanumeric IDs matching Focalboard's format.
+
+### Tool Registry (16 tools)
+
+Tools use a **side-effect registration pattern**:
+
+1. `src/tools/registry.ts` — Two `Map`s (`definitions` and `handlers`) with `registerTool(definition, handler)`, `getAllToolDefinitions()`, and `getToolHandler(name)`
+2. Each tool file (`boards.ts`, `cards.ts`, `blocks.ts`) calls `registerTool()` at module load time
+3. `src/tools/index.ts` imports tool files for side effects, then re-exports registry functions
+
+| File | Tools |
+|------|-------|
+| `boards.ts` | 8 tools (CRUD + list/search + members + team users) |
+| `cards.ts` | 4 tools (list/get/create/update) |
+| `blocks.ts` | 4 tools (create/get/update/delete) |
+
+**Key tool patterns:**
+- `create_card` accepts an optional `description` param that auto-creates a child text block and sets `contentOrder`
+- `update_card` does client-side property merging — fetches existing card, merges `properties` → `updatedProperties`, handles `deletedProperties`
+- `update_board` transforms `cardProperties` → `updatedCardProperties` for the patch API
+
+### Configuration
+
+`src/config.ts` — Single `config` object reading all env vars at startup with two sections: `config.focalboard` and `config.transport`.
+
+### Types & Schemas
+
+`src/types/` — Zod schemas for runtime validation. Each resource has `*Schema`, `*PatchSchema`, and `Create*Schema`. Types are inferred from Zod with `z.infer<>`.
+
+- `common.ts` — `PropertyOptionSchema`, `PropertyTemplateSchema`, `FocalboardConfig`
+- `board.ts` — Board schemas (type field: `"O"` open, `"P"` private)
+- `card.ts` — Card schemas
+- `block.ts` — Block schemas (14 block types: text, image, view, card, comment, etc.)
+
+### Response Formatting
+
+`src/tools/format.ts` — Formatters (`formatBoard`, `formatCard`, `formatBlock`, `formatMember`) that selectively include fields, omitting empty/null values to minimize token usage.
 
 ## Testing
 
-Use `bun test` to run tests.
+Tests use Bun's built-in test runner (`bun:test`) with `describe`/`test`/`expect`.
 
-```ts#index.test.ts
-import { test, expect } from "bun:test";
+| Directory | Purpose |
+|-----------|---------|
+| `test/auth/` | Auth flow tests (Mattermost + standalone modes) |
+| `test/e2e/` | End-to-end lifecycle tests (board, block, batch operations) |
+| `test/integration/` | Server integration with mock Focalboard API |
+| `test/validation/` | Zod schema validation and error handling |
+| `test/performance/` | Stress tests and performance benchmarks |
 
-test("hello world", () => {
-  expect(1).toBe(1);
-});
-```
+Test utilities: `test/fixtures.ts` (mock data factories like `createMockBoard()`) and `test/mocks.ts` (`MockHTTPClient` for intercepting HTTP calls).
 
-## Frontend
+## Environment Variables
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FOCALBOARD_URL` | `http://localhost:8000` | Focalboard base URL |
+| `FOCALBOARD_API_PREFIX` | `/api/v2` | API path prefix |
+| `FOCALBOARD_TEAM_ID` | `0` | Default team ID |
+| `FOCALBOARD_TOKEN` | — | Auth token |
+| `FOCALBOARD_PASSWORD` | — | Auto-login password |
+| `FOCALBOARD_LOGIN_ID` | — | Mattermost login ID |
+| `FOCALBOARD_USERNAME` | — | Focalboard username |
+| `FOCALBOARD_AUTH_MODE` | `auto` | `auto`, `mattermost`, or `focalboard` |
+| `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
+| `MCP_HTTP_PORT` | `3000` | HTTP mode port |
+| `MCP_HTTP_PATH` | `/mcp` | HTTP mode endpoint path |
 
-Server:
+## Adding a New Tool
 
-```ts#index.ts
-import index from "./index.html"
+1. In the appropriate `src/tools/*.ts` file, call `registerTool(definition, handler)` with the tool schema and async handler function
+2. If adding a new resource type: create `src/types/<resource>.ts` with Zod schemas, add formatter in `format.ts`, create `src/tools/<resource>.ts`, and import it for side effects in `src/tools/index.ts`
 
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
+The registry auto-discovers tools — no manual wiring needed in `src/index.ts`.
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+## API Reference
 
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
-
-With the following `frontend.tsx`:
-
-```tsx#frontend.tsx
-import React from "react";
-import { createRoot } from "react-dom/client";
-
-// import .css files directly and it works
-import './index.css';
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
-
-```sh
-bun --hot ./index.ts
-```
-
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+The full Focalboard API specification is in `swagger.yml` at the project root.

@@ -1,12 +1,11 @@
 import { test, expect, describe } from "bun:test";
-import { ErrorResponseSchema } from "../../planning/types";
+import { ErrorResponseSchema } from "../../src/types/common";
 
 describe("Error Handling Tests", () => {
   test("validates error response structure", () => {
     const error = {
       error: "Not found",
-      errorCode: "NOT_FOUND",
-      details: { resource: "board", id: "123" },
+      errorCode: 404,
     };
     expect(() => ErrorResponseSchema.parse(error)).not.toThrow();
   });
@@ -14,13 +13,7 @@ describe("Error Handling Tests", () => {
   test("handles validation errors", () => {
     const error = {
       error: "Validation failed",
-      errorCode: "VALIDATION_ERROR",
-      details: {
-        fields: [
-          { field: "title", message: "Required" },
-          { field: "teamId", message: "Invalid format" },
-        ],
-      },
+      errorCode: 400,
     };
     expect(() => ErrorResponseSchema.parse(error)).not.toThrow();
   });
@@ -28,7 +21,7 @@ describe("Error Handling Tests", () => {
   test("handles authentication errors", () => {
     const error = {
       error: "Unauthorized",
-      errorCode: "AUTH_ERROR",
+      errorCode: 401,
     };
     expect(() => ErrorResponseSchema.parse(error)).not.toThrow();
   });
@@ -36,8 +29,7 @@ describe("Error Handling Tests", () => {
   test("handles server errors", () => {
     const error = {
       error: "Internal server error",
-      errorCode: "INTERNAL_ERROR",
-      details: { stack: "Error stack trace..." },
+      errorCode: 500,
     };
     expect(() => ErrorResponseSchema.parse(error)).not.toThrow();
   });

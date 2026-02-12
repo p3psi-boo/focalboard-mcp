@@ -20,6 +20,235 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Focalboa
 | [Zod](https://zod.dev) | v4.3.6 |
 | TypeScript | 5+ |
 
+## Architecture
+
+### High-Level Overview
+
+```mermaid
+graph TB
+    AI[AI Assistant<br>Claude / GPT / etc.]
+
+    subgraph MCP Server
+        Transport[Transport Layer<br>stdio · HTTP+SSE]
+        Server[MCP Server<br>@modelcontextprotocol/sdk]
+        Registry[Tool Registry<br>16 tools]
+        Client[FocalboardClient<br>HTTP API wrapper]
+        Auth[Auth Module<br>login · logout]
+        Config[Config<br>centralized env vars]
+    end
+
+    FB[Focalboard / Mattermost<br>REST API]
+
+    AI <-->|MCP Protocol| Transport
+    Transport <--> Server
+    Server -->|CallToolRequest| Registry
+    Registry -->|handler fn| Client
+    Client -->|delegates| Auth
+    Client -->|HTTP| FB
+    Config -.->|reads env once| Server
+    Config -.-> Registry
+    Config -.-> Client
+```
+
+### Startup Sequence
+
+```mermaid
+sequenceDiagram
+    participant Env as Environment
+    participant Config as config.ts
+    participant Index as index.ts
+    participant Auth as auth.ts
+    participant Client as FocalboardClient
+    participant FB as Focalboard API
+    participant Transport as Transport Layer
+
+    Env->>Config: process.env.*
+    Config-->>Index: config object
+
+    Index->>Client: new FocalboardClient(config)
+
+    alt password is set
+        Index->>Client: client.login(params)
+        Client->>Auth: login(ctx, params)
+        Auth->>FB: POST /api/v4/users/login (Mattermost)<br>or POST /api/v2/login (standalone)
+        FB-->>Auth: token + CSRF cookie
+        Auth-->>Client: LoginResult
+        Client->>Client: setAuth(token, csrfToken)
+    end
+
+    Index->>Index: createServer()
+    Index->>Index: register signal handlers
+
+    alt MCP_TRANSPORT = "http"
+        Index->>Transport: startHttpTransport(createServer, config)
+        Transport->>Transport: Bun.serve() on port 3000
+    else MCP_TRANSPORT = "stdio" (default)
+        Index->>Transport: startStdioTransport(server)
+        Transport->>Transport: StdioServerTransport.connect()
+    end
+```
+
+### Tool Call Request Flow
+
+```mermaid
+sequenceDiagram
+    participant AI as AI Assistant
+    participant MCP as MCP Server
+    participant Registry as Tool Registry
+    participant Handler as Tool Handler fn
+    participant Client as FocalboardClient
+    participant FB as Focalboard API
+
+    AI->>MCP: CallToolRequest { name: "create_card", args }
+    MCP->>Registry: getToolHandler("create_card")
+    Registry-->>MCP: handler function
+    MCP->>Handler: handler(client, args)
+
+    Handler->>Client: resolveBoard("Sprint Planning", teamId)
+    Client->>FB: GET /boards/search?q=Sprint+Planning
+    FB-->>Client: [{ id: "abc123", title: "Sprint Planning", ... }]
+    Client-->>Handler: Board { id: "abc123" }
+
+    Handler->>Client: createCard("abc123", data)
+    Client->>FB: POST /boards/abc123/cards
+    FB-->>Client: Card { id: "card456", ... }
+
+    opt description provided
+        Handler->>Client: createBlocks("abc123", [text block])
+        Client->>FB: POST /boards/abc123/blocks
+        FB-->>Client: Block[]
+        Handler->>Client: updateCard("card456", { contentOrder })
+        Client->>FB: PATCH /cards/card456
+        FB-->>Client: Card (updated)
+    end
+
+    Handler-->>MCP: formatted result
+    MCP-->>AI: CallToolResult { content: [{ type: "text", text: "..." }] }
+```
+
+### Tool Registry Pattern
+
+```mermaid
+graph LR
+    subgraph "Module Load (side effects)"
+        B[boards.ts] -->|registerTool × 8| R[Registry Map]
+        C[cards.ts] -->|registerTool × 4| R
+        K[blocks.ts] -->|registerTool × 4| R
+    end
+
+    subgraph "Runtime"
+        R -->|getAllToolDefinitions| LS[ListToolsRequest]
+        R -->|getToolHandler name| CT[CallToolRequest]
+    end
+
+    style R fill:#f9f,stroke:#333
+```
+
+### Module Dependency Graph
+
+```mermaid
+graph TD
+    index[src/index.ts<br>entry point]
+    config[src/config.ts<br>env vars]
+    client[src/client/focalboard.ts<br>API client]
+    auth[src/client/auth.ts<br>login / logout]
+    toolsIdx[src/tools/index.ts<br>re-exports registry]
+    registry[src/tools/registry.ts<br>tool Map]
+    boards[src/tools/boards.ts<br>8 board tools]
+    cards[src/tools/cards.ts<br>4 card tools]
+    blocks[src/tools/blocks.ts<br>4 block tools]
+    format[src/tools/format.ts<br>response formatters]
+    types[src/types/<br>Zod schemas]
+    httpT[src/transport/http.ts<br>Bun.serve + SSE]
+    stdioT[src/transport/stdio.ts<br>StdioServerTransport]
+
+    index --> config
+    index --> client
+    index --> toolsIdx
+    index --> httpT
+    index --> stdioT
+
+    client --> auth
+    client --> types
+
+    toolsIdx --> registry
+    toolsIdx --> boards
+    toolsIdx --> cards
+    toolsIdx --> blocks
+
+    boards --> registry
+    boards --> config
+    boards --> format
+    boards --> types
+    cards --> registry
+    cards --> config
+    cards --> format
+    cards --> types
+    blocks --> registry
+    blocks --> config
+    blocks --> format
+    blocks --> types
+
+    style index fill:#ffd,stroke:#333
+    style registry fill:#f9f,stroke:#333
+    style config fill:#dfd,stroke:#333
+    style auth fill:#ddf,stroke:#333
+```
+
+### HTTP Transport Session Management
+
+```mermaid
+sequenceDiagram
+    participant C1 as Client A
+    participant C2 as Client B
+    participant HTTP as HTTP Transport
+    participant S1 as MCP Server (session-1)
+    participant S2 as MCP Server (session-2)
+
+    C1->>HTTP: POST /mcp { method: "initialize" }
+    HTTP->>HTTP: create new transport + session ID
+    HTTP->>S1: server.connect(transport)
+    HTTP-->>C1: 200 + Mcp-Session-Id: session-1
+
+    C2->>HTTP: POST /mcp { method: "initialize" }
+    HTTP->>S2: new server + transport
+    HTTP-->>C2: 200 + Mcp-Session-Id: session-2
+
+    C1->>HTTP: POST /mcp { tool call }<br>Mcp-Session-Id: session-1
+    HTTP->>S1: transport.handleRequest()
+    S1-->>C1: SSE stream with result
+
+    C1->>HTTP: GET /mcp<br>Mcp-Session-Id: session-1
+    HTTP->>S1: SSE reconnect
+    S1-->>C1: SSE event stream
+
+    C1->>HTTP: DELETE /mcp<br>Mcp-Session-Id: session-1
+    HTTP->>HTTP: sessions.delete("session-1")
+    HTTP-->>C1: 200
+```
+
+### Authentication Modes
+
+```mermaid
+flowchart TD
+    Start[client.login] --> Mode{auth mode?}
+
+    Mode -->|"auto"| Infer{apiPrefix contains<br>/plugins/focalboard/?}
+    Infer -->|yes| MM
+    Infer -->|no| FB
+
+    Mode -->|"mattermost"| MM[Mattermost Auth]
+    Mode -->|"focalboard"| FB[Focalboard Auth]
+
+    MM --> MM1[POST /api/v4/users/login<br>body: login_id + password]
+    MM1 --> MM2[Extract Token header<br>+ MMCSRF cookie]
+    MM2 --> Done[setAuth token + csrfToken]
+
+    FB --> FB1[POST /api/v2/login<br>body: username + password]
+    FB1 --> FB2[Extract token from<br>JSON response]
+    FB2 --> Done
+```
+
 ## Installation
 
 ```bash
@@ -84,6 +313,8 @@ When a password is set, the server logs in at startup and logs out on exit.
 
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
+**Standalone Focalboard:**
+
 ```json
 {
   "mcpServers": {
@@ -93,6 +324,25 @@ When a password is set, the server logs in at startup and logs out on exit.
       "env": {
         "FOCALBOARD_URL": "https://your-focalboard-instance.com",
         "FOCALBOARD_TOKEN": "your-auth-token"
+      }
+    }
+  }
+}
+```
+
+**Focalboard as Mattermost plugin:**
+
+```json
+{
+  "mcpServers": {
+    "focalboard": {
+      "command": "bun",
+      "args": ["/path/to/focalboard-mcp/index.ts"],
+      "env": {
+        "FOCALBOARD_URL": "https://your-mattermost-instance.com",
+        "FOCALBOARD_API_PREFIX": "/plugins/focalboard/api/v2",
+        "FOCALBOARD_TOKEN": "your-auth-token",
+        "FOCALBOARD_REQUESTED_WITH": "XMLHttpRequest"
       }
     }
   }
@@ -103,6 +353,8 @@ When a password is set, the server logs in at startup and logs out on exit.
 
 `~/.claude/settings.json` or project `.mcp.json`:
 
+**Standalone Focalboard:**
+
 ```json
 {
   "mcpServers": {
@@ -117,6 +369,27 @@ When a password is set, the server logs in at startup and logs out on exit.
   }
 }
 ```
+
+**Focalboard as Mattermost plugin:**
+
+```json
+{
+  "mcpServers": {
+    "focalboard": {
+      "command": "bun",
+      "args": ["/path/to/focalboard-mcp/index.ts"],
+      "env": {
+        "FOCALBOARD_URL": "https://your-mattermost-instance.com",
+        "FOCALBOARD_API_PREFIX": "/plugins/focalboard/api/v2",
+        "FOCALBOARD_TOKEN": "your-auth-token",
+        "FOCALBOARD_REQUESTED_WITH": "XMLHttpRequest"
+      }
+    }
+  }
+}
+```
+
+> **Tip:** When running Focalboard as a Mattermost plugin, `FOCALBOARD_API_PREFIX` must be set to `/plugins/focalboard/api/v2`. `FOCALBOARD_REQUESTED_WITH` set to `XMLHttpRequest` is required by Mattermost's CSRF protection. For auto-login, you can use `FOCALBOARD_LOGIN_ID` + `FOCALBOARD_PASSWORD` instead of `FOCALBOARD_TOKEN`.
 
 ### HTTP Streamable mode
 
@@ -185,24 +458,31 @@ Update the card "Design API schema" — set status to "In Progress"
 
 ```
 focalboard-mcp/
-├── index.ts              # Entry point (re-export)
+├── index.ts                  # Entry point (re-export)
 ├── src/
-│   ├── index.ts          # Server startup & transport layer
+│   ├── index.ts              # Server startup, auth bootstrap, transport selection
+│   ├── config.ts             # Centralized environment variable config
 │   ├── client/
-│   │   └── focalboard.ts # Focalboard HTTP API client
+│   │   ├── focalboard.ts     # Focalboard HTTP API client (CRUD + resolution)
+│   │   └── auth.ts           # Authentication (login/logout, cookie parsing)
 │   ├── tools/
-│   │   ├── boards.ts     # Board + member/user tool definitions & handlers
-│   │   ├── cards.ts      # Card tool definitions & handlers
-│   │   ├── blocks.ts     # Block tool definitions & handlers
-│   │   ├── format.ts     # Response formatting utilities
-│   │   └── index.ts      # Tool exports
+│   │   ├── registry.ts       # Tool registry (Map-based registerTool pattern)
+│   │   ├── boards.ts         # 8 board tools (registered at import)
+│   │   ├── cards.ts          # 4 card tools (registered at import)
+│   │   ├── blocks.ts         # 4 block tools (registered at import)
+│   │   ├── format.ts         # Response formatting utilities
+│   │   └── index.ts          # Side-effect imports + registry re-exports
+│   ├── transport/
+│   │   ├── http.ts           # HTTP Streamable transport (Bun.serve + SSE)
+│   │   └── stdio.ts          # Stdio transport wrapper
 │   └── types/
-│       ├── board.ts       # Board Zod schemas
-│       ├── card.ts        # Card Zod schemas
-│       ├── block.ts       # Block Zod schemas
-│       └── common.ts      # Shared types (FocalboardConfig, PropertyOption, etc.)
-├── test/                  # Test files
-├── swagger.yml            # Focalboard API specification
+│       ├── board.ts          # Board Zod schemas
+│       ├── card.ts           # Card Zod schemas
+│       ├── block.ts          # Block Zod schemas
+│       ├── common.ts         # Shared types (FocalboardConfig, PropertyOption, etc.)
+│       └── index.ts          # Type re-exports
+├── test/                     # Test files
+├── swagger.yml               # Focalboard API specification
 ├── package.json
 └── tsconfig.json
 ```
