@@ -16,10 +16,11 @@ export const blockTools = [
   },
   {
     name: "get_blocks",
-    description: "Get blocks from a board, optionally filtered by type",
+    description: "Get blocks from a board, optionally filtered by type and/or parent",
     inputSchema: { type: "object", properties: {
       board: { type: "string", description: "Board name or ID" },
       type: { type: "string", description: "Filter by block type (card, view, text, etc.)" },
+      parent: { type: "string", description: "Parent block ID to filter by" },
     }, required: ["board"] },
   },
   {
@@ -61,7 +62,7 @@ export async function handleBlockTool(client: FocalboardClient, name: string, ar
     }
     case "get_blocks": {
       const board = await client.resolveBoard(args.board as string);
-      const blocks = await client.getBlocks(board.id, undefined, args.type as string | undefined);
+      const blocks = await client.getBlocks(board.id, args.parent as string | undefined, args.type as string | undefined);
       return blocks.map(formatBlock);
     }
     case "update_block": {

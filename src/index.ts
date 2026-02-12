@@ -3,6 +3,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { FocalboardClient } from "./client/focalboard";
 import { boardTools, handleBoardTool } from "./tools/boards";
 import { blockTools, handleBlockTool } from "./tools/blocks";
+import { cardTools, handleCardTool } from "./tools/cards";
 
 const client = new FocalboardClient({
   baseUrl: process.env.FOCALBOARD_URL || "http://localhost:8000",
@@ -15,8 +16,9 @@ const client = new FocalboardClient({
 function createServer() {
   const server = new Server({ name: "focalboard-mcp", version: "1.0.0" }, { capabilities: { tools: {} } });
 
-  const allTools = [...boardTools, ...blockTools];
+  const allTools = [...boardTools, ...blockTools, ...cardTools];
   const boardToolNames = new Set(boardTools.map(t => t.name));
+  const cardToolNames = new Set(cardTools.map(t => t.name));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: allTools }));
 
@@ -25,7 +27,9 @@ function createServer() {
     try {
       const result = boardToolNames.has(name)
         ? await handleBoardTool(client, name, args)
-        : await handleBlockTool(client, name, args);
+        : cardToolNames.has(name)
+          ? await handleCardTool(client, name, args)
+          : await handleBlockTool(client, name, args);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (e) {
       return { content: [{ type: "text", text: `Error: ${(e as Error).message}` }], isError: true };

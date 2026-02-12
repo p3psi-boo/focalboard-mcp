@@ -1,6 +1,7 @@
 import type { FocalboardConfig } from "../types/common";
 import type { Board, BoardPatch, CreateBoard } from "../types/board";
 import type { Block, BlockPatch, CreateBlock } from "../types/block";
+import type { Card, CardPatch, CreateCard } from "../types/card";
 
 export type AuthMode = "auto" | "focalboard" | "mattermost";
 
@@ -243,5 +244,25 @@ export class FocalboardClient {
     this.request<Block>("PATCH", `/boards/${boardId}/blocks/${blockId}`, patch);
   deleteBlock = (boardId: string, blockId: string) =>
     this.request<void>("DELETE", `/boards/${boardId}/blocks/${blockId}`);
+
+  // Card endpoints (dedicated Cards API with pagination)
+  listCards = (boardId: string, page = 0, perPage = 20) =>
+    this.request<Card[]>("GET", `/boards/${boardId}/cards?page=${page}&per_page=${perPage}`);
+  getCard = (cardId: string) =>
+    this.request<Card>("GET", `/cards/${cardId}`);
+  createCard = (boardId: string, data: CreateCard) => {
+    const now = Date.now();
+    return this.request<Card>("POST", `/boards/${boardId}/cards`, { ...data, createAt: now, updateAt: now });
+  };
+  updateCard = (cardId: string, patch: CardPatch) =>
+    this.request<Card>("PATCH", `/cards/${cardId}`, patch);
+
+  // Board members
+  getBoardMembers = (boardId: string) =>
+    this.request<any[]>("GET", `/boards/${boardId}/members`);
+
+  // Team users
+  listTeamUsers = (teamId: string) =>
+    this.request<any[]>("GET", `/teams/${teamId}/users`);
 
 }
